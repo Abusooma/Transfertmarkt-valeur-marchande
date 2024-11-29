@@ -1,0 +1,161 @@
+import asyncio
+from datetime import datetime
+import time
+import sys
+import threading
+import pandas as pd
+from openpyxl.utils import get_column_letter
+from openpyxl import load_workbook
+from players import ScraperTransferMarkt
+from loguru import logger
+
+
+class RealTimeChronometre:
+    def __init__(self):
+        self.debut = time.time()
+        self.arret = False
+        self.thread = None
+
+    def demarrer(self):
+        def afficher_temps():
+            while not self.arret:
+                temps_ecoule = time.time() - self.debut
+                minutes = int(temps_ecoule // 60)
+                secondes = int(temps_ecoule % 60)
+                sys.stdout.write(
+                    f"\rTemps écoulé: {minutes:02d}:{secondes:02d}")
+                sys.stdout.flush()
+                time.sleep(1)
+
+        self.thread = threading.Thread(target=afficher_temps, daemon=True)
+        self.thread.start()
+
+    def arreter(self):
+        self.arret = True
+        if self.thread:
+            self.thread.join()
+        temps_total = time.time() - self.debut
+        return temps_total
+
+
+class MiseAJourValeursJoueurs:
+    def __init__(self, fichier_entree: str, fichier_sortie: str):
+        self.fichier_entree = fichier_entree
+        self.fichier_sortie = fichier_sortie
+        self.scraper = ScraperTransferMarkt(max_threads=3)
+        self.chronometre = RealTimeChronometre()
+
+    def formater_nom2(self, nom_original: str) -> str:
+        parties = nom_original.split()
+
+        index_majuscule = next(
+            (i for i, mot in enumerate(parties) if mot.isupper()), None)
+
+        if index_majuscule is not None:
+            mot_majuscule = parties[index_majuscule]
+            autres_parties = parties[:index_majuscule] + \
+                parties[index_majuscule+1:]
+
+            return f"{mot_majuscule} {' '.join(autres_parties)}"
+
+        return nom_original
+
+    async def mettre_a_jour(self):
+        print("Début du Processus: ")
+
+        self.chronometre.demarrer()
+
+        mois_fr = {
+            1: "janvier", 2: "février", 3: "mars", 4: "avril",
+            5: "mai", 6: "juin", 7: "juillet", 8: "août",
+            9: "septembre", 10: "octobre", 11: "novembre", 12: "décembre"
+        }
+
+        df = pd.read_excel(self.fichier_entree, parse_dates=["DOB"])
+        noms_joueurs = df["NOM"].tolist()
+
+        try:
+            valeurs_joueurs = await asyncio.to_thread(
+                self.scraper.recuperer_valeurs_joueurs,
+                noms_joueurs
+            )
+        except Exception as e:
+            logger.error(f"Erreur durant le scraping : {e}")
+            self.chronometre.arreter()
+            raise
+
+        donnees_mises_a_jour = []
+        date_courante = datetime.now().strftime("%d/%m/%Y")
+
+        for _, ligne in df.iterrows():
+            nom = ligne["NOM"]
+            valeur_joueur = valeurs_joueurs.get(nom, None)
+
+            dob = ""
+            if pd.notnull(ligne["DOB"]):
+                date = ligne["DOB"]
+                dob = f"{date.day} {mois_fr[date.month]} {date.year}"
+
+            if valeur_joueur and valeur_joueur.nom_transfermarkt:
+                parties_nom = valeur_joueur.nom_transfermarkt.split()
+                if len(parties_nom) >= 3:
+                    nom2 = f"{parties_nom[-2].upper()} {parties_nom[-1].upper()} {' '.join(parties_nom[:-2])}"
+                else:
+                    nom2 = f"{parties_nom[-1].upper()} {' '.join(parties_nom[:-1])}"
+            else:
+                nom2 = self.formater_nom2(nom)
+
+            donnees_mises_a_jour.append({
+                "NOM": valeur_joueur.nom_transfermarkt if valeur_joueur else "",
+                "DOB": dob,
+                "DATE": date_courante,
+                "VALEUR": valeur_joueur.valeur if valeur_joueur else 0.0,
+                "NOM2": nom2
+            })
+
+        df_mise_a_jour = pd.DataFrame(donnees_mises_a_jour)
+        df_mise_a_jour.to_excel(self.fichier_sortie, index=False)
+
+        self.ajuster_largeur_colonnes(self.fichier_sortie)
+
+        temps_total = self.chronometre.arreter()
+
+        print(f"\nTerminée. Fichier enregistré sous {self.fichier_sortie}")
+        print(f"Temps total d'exécution : {temps_total:.2f} secondes")
+
+    def ajuster_largeur_colonnes(self, fichier: str):
+        wb = load_workbook(fichier)
+        sheet = wb.active
+
+        for col in sheet.columns:
+            max_length = 0
+            col_letter = get_column_letter(col[0].column)
+
+            for cell in col:
+                try:
+                    if cell.value:
+                        max_length = max(max_length, len(str(cell.value)))
+                except:
+                    pass
+
+            adjusted_width = max_length + 2
+            sheet.column_dimensions[col_letter].width = adjusted_width
+
+        wb.save(fichier)
+
+
+async def main():
+    fichier_entree = "Fichier_error_transf2.xls"
+    fichier_sortie = "resultats/resultats.xlsx"
+
+    mise_a_jour = MiseAJourValeursJoueurs(fichier_entree, fichier_sortie)
+    try:
+        await mise_a_jour.mettre_a_jour()
+    except Exception as e:
+        logger.error(f"Une erreur s'est produite : {e}")
+    finally:
+        mise_a_jour.scraper.cache.fermer()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
