@@ -6,8 +6,11 @@ import threading
 import unicodedata
 import logging
 from itertools import permutations, combinations
-from itertools import permutations
 from rapidfuzz import fuzz
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from urllib.parse import urljoin
 from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from selectolax.parser import HTMLParser
@@ -15,7 +18,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from loguru import logger
 from queue import Queue
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from dataclasses import dataclass
 
 
@@ -30,6 +33,7 @@ class ValeurJoueur:
     nom_transfermarkt: str
     valeur: float
     statut: str = "actif"
+    fin_contrat: str = None
     erreur: Optional[str] = None
     timestamp: float = time.time()
 
@@ -86,18 +90,19 @@ class CacheSQLite:
 
 
 class ScraperTransferMarkt:
+    BASE_URL = "https://www.transfermarkt.fr"
+
     def __init__(self, max_threads: int = 3):
         self.max_threads = max_threads
         self.cache = CacheSQLite()
         self.pool_drivers = Queue()
         self._initialiser_pool_drivers()
-
+        self.joueurs_non_traites = []
 
     def _initialiser_pool_drivers(self):
         for _ in range(self.max_threads):
             driver = self._creer_driver()
             self.pool_drivers.put(driver)
-
 
     def _creer_driver(self):
         options = webdriver.ChromeOptions()
@@ -116,7 +121,6 @@ class ScraperTransferMarkt:
         driver.implicitly_wait(5)
         driver.set_page_load_timeout(30)
         return driver
-    
 
     def _traiter_popup(self, driver):
         try:
@@ -128,12 +132,9 @@ class ScraperTransferMarkt:
                     'button.message-component.message-button.no-children.focusable.accept-all.sp_choice_type_11')
                 if bouton:
                     bouton.click()
-                    logger.debug("Popup fermé avec succès")
                 driver.switch_to.default_content()
         except Exception as e:
-            # logger.debug(f"Erreur lors du traitement du popup: {e}")
             driver.switch_to.default_content()
-
 
     def _obtenir_table(self, driver) -> Optional[HTMLParser]:
         for _ in range(2):
@@ -143,16 +144,15 @@ class ScraperTransferMarkt:
                 return table
             self._traiter_popup(driver)
         return None
-    
 
     def _normaliser_nom(self, nom_joueur: str) -> str:
         nom_joueur = ''.join(
             c for c in unicodedata.normalize('NFD', nom_joueur) if unicodedata.category(c) != 'Mn'
         )
-        nom_joueur_nettoyer = re.sub(r"[^a-zA-Z0-9\s\-]", "", nom_joueur).lower().strip()
+        nom_joueur_nettoyer = re.sub(
+            r"[^a-zA-Z0-9\s\-]", "", nom_joueur).lower().strip()
         return nom_joueur_nettoyer.replace("-", " ")
 
-    
     def _generer_variantes_recherche(self, nom_joueur: str) -> list:
         noms = [nom for nom in nom_joueur.split() if nom]
         variantes = []
@@ -179,7 +179,6 @@ class ScraperTransferMarkt:
 
         return list(dict.fromkeys(variantes))
 
-
     def _parser_valeur_marche(self, valeur_texte: str) -> float:
         try:
             match = re.search(r"(\d+(?:,\d+)?)\s*(mio\.|K)", valeur_texte)
@@ -191,24 +190,65 @@ class ScraperTransferMarkt:
         except Exception:
             return 0.0
 
+    def _parser_valeur_fin_contrat(self, html):
+        try:
+            contrat_spans = html.css('span')
+            
+            for i, span in enumerate(contrat_spans):
+                text = span.text(strip=True)
+                if "Contrat jusqu'à:" in text:
+                    if i + 1 < len(contrat_spans):
+                        next_span = contrat_spans[i + 1]
+                        value_end_date = next_span.text(strip=True)
+
+                        if value_end_date == '-' or not value_end_date:
+                            return '?'
+                        return value_end_date
+
+            logger.warning("Aucune date de fin de contrat trouvée")
+            return '?'
+
+        except Exception as e:
+            logger.error(f"Erreur lors du parsing de la fin de contrat: {e}")
+            return None
+
+    def _recuperer_fin_contrat(self, driver, url_details):
+        try:
+            driver.get(url_details)
+
+            WebDriverWait(driver, 5)
+            self._traiter_popup(driver)
+
+            html = HTMLParser(driver.page_source)
+
+            return self._parser_valeur_fin_contrat(html)
+            
+        except Exception as e:
+            logger.warning(
+                f"Erreur lors de la récupération de la fin de contrat: {e}")
+            return None
+        
     def _scraper_valeur_joueur(self, nom_joueur: str) -> Optional[ValeurJoueur]:
         driver = self.pool_drivers.get()
         try:
             nom_normalise = self._normaliser_nom(nom_joueur)
 
-            variantes_recherche = self._generer_variantes_recherche(nom_normalise)
+            variantes_recherche = self._generer_variantes_recherche(
+                nom_normalise)
 
             meilleur_resultat = None
+            meilleur_url_details = None
             meilleur_score = 0
             urls_visitees = set()
 
             cache_resultats_normals = {}
 
             for variante in variantes_recherche:
-                url_recherche = f"https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query={quote(variante)}"
+                url_recherche = f"{self.BASE_URL}/schnellsuche/ergebnis/schnellsuche?query={quote(variante)}"
 
                 if url_recherche in urls_visitees:
                     continue
+
                 urls_visitees.add(url_recherche)
 
                 try:
@@ -219,9 +259,11 @@ class ScraperTransferMarkt:
                         continue
 
                     lignes = table.css("tr")
-                    for i, ligne in enumerate(lignes[1:], 1):  # Skip header row
+
+                    for i, ligne in enumerate(lignes[1:], 1):
                         try:
-                            element_nom = ligne.css_first("td.hauptlink a[title]")
+                            element_nom = ligne.css_first(
+                                "td.hauptlink a[title]")
                             if not element_nom:
                                 continue
 
@@ -229,6 +271,9 @@ class ScraperTransferMarkt:
                                 'title', '')
                             nom_normalise_transfermarkt = self._normaliser_nom(
                                 nom_transfermarkt)
+
+                            url_details = urljoin(
+                                self.BASE_URL, element_nom.attributes.get('href', ''))
 
                             if nom_normalise_transfermarkt in cache_resultats_normals:
                                 resultat = cache_resultats_normals[nom_normalise_transfermarkt]
@@ -258,33 +303,42 @@ class ScraperTransferMarkt:
 
                                 cache_resultats_normals[nom_normalise_transfermarkt] = resultat
 
-                            score = fuzz.token_sort_ratio(nom_normalise, nom_normalise_transfermarkt)
+                            score = fuzz.token_sort_ratio(
+                                nom_normalise, nom_normalise_transfermarkt)
 
                             if score >= 60 and (score > meilleur_score or
                                                 (score == meilleur_score and resultat['valeur'] >
-                                                (meilleur_resultat['valeur'] if meilleur_resultat else -float('inf')))):
+                                                 (meilleur_resultat['valeur'] if meilleur_resultat else -float('inf')))):
                                 meilleur_score = score
                                 meilleur_resultat = {
                                     **resultat,
                                     'score': score
                                 }
+                                meilleur_url_details = url_details
 
                         except Exception as e:
-                            logger.debug(
-                                f"Erreur lors du traitement d'un joueur dans la ligne: {e}")
+                            logger.error(
+                                f"Erreur lors du traitement d'un joueur {nom_joueur} dans la ligne: {e}")
                             continue
 
                 except Exception as e:
-                    logger.debug(
-                        f"Erreur lors du traitement de la variante {variante}: {e}")
+                    logger.error(
+                        f"Erreur lors du traitement de la variante {variante} pour {nom_joueur}: {e}")
                     continue
+
+            fin_contrat = None
+            if meilleur_resultat and meilleur_url_details:
+                meilleur_resultat['fin_contrat'] = self._recuperer_fin_contrat(
+                    driver, meilleur_url_details)
+            
 
             if meilleur_resultat:
                 return ValeurJoueur(
                     nom_joueur,
                     meilleur_resultat['nom'],
                     meilleur_resultat['valeur'],
-                    meilleur_resultat['statut']
+                    meilleur_resultat['statut'],
+                    meilleur_resultat['fin_contrat']
                 )
 
             return ValeurJoueur(
@@ -292,17 +346,20 @@ class ScraperTransferMarkt:
                 "",
                 0.0,
                 "inconnu",
-                "Aucun joueur actif trouvé avec ce nom"
+                f"Aucun joueur actif trouvé avec le nom {nom_joueur}"
             )
 
         except Exception as e:
-            logger.error(f"Erreur lors du scraping de {nom_joueur}: {e}")
+            logger.error(
+                f"Erreur globale lors du scraping de {nom_joueur}: {e}")
             return ValeurJoueur(nom_joueur, "", 0.0, "inconnu", str(e))
 
         finally:
             self.pool_drivers.put(driver)
-            
+
     def recuperer_valeurs_joueurs(self, noms_joueurs: List[str]) -> Dict[str, ValeurJoueur]:
+        self.joueurs_non_traites = []
+
         resultats = {}
         total_joueurs = len(noms_joueurs)
         joueurs_traites = 0
@@ -312,20 +369,45 @@ class ScraperTransferMarkt:
             futures = {executor.submit(
                 self._scraper_valeur_joueur, nom): nom for nom in noms_joueurs}
             for future in as_completed(futures):
-                valeur = future.result()
-                resultats[valeur.nom_original] = valeur
+                try:
+                    valeur = future.result()
+                    resultats[valeur.nom_original] = valeur
 
-                joueurs_traites += 1
+                    joueurs_traites += 1
 
-                if valeur.valeur > 0 or valeur.statut != "inconnu":
-                    self.cache.definir(valeur.nom_original, valeur)
-                    mises_a_jour_reussies += 1
+                    if valeur.valeur > 0 or valeur.statut != "inconnu":
+                        self.cache.definir(valeur.nom_original, valeur)
+                        mises_a_jour_reussies += 1
+                    else:
+                        self.joueurs_non_traites.append({
+                            'nom': valeur.nom_original,
+                            'erreur': valeur.erreur or 'Traitement incomplet'
+                        })
+
+                        logger.warning(
+                            f"Joueur non traité: {valeur.nom_original} - {valeur.erreur}")
+
+                except Exception as e:
+                   
+                    logger.error(f"Erreur inattendue pour un joueur: {e}")
+                    self.joueurs_non_traites.append({
+                        'nom': futures[future],
+                        'erreur': str(e)
+                    })
 
                 print(f"\nProgression - Joueurs traités : {joueurs_traites}/{total_joueurs}, "
-                      f"Mises à jour réussies : {mises_a_jour_reussies}")
+                      f"Mises à jour réussies : {mises_a_jour_reussies}, "
+                      f"Joueur en cours : {valeur.nom_original}")
+
+        if self.joueurs_non_traites:
+            print("\n--- Joueurs non traités ---")
+            for joueur in self.joueurs_non_traites:
+                print(f"Nom: {joueur['nom']}, Erreur: {joueur['erreur']}")
+            print(
+                f"Total joueurs non traités : {len(self.joueurs_non_traites)}")
 
         return resultats
-    
+
     def fermer(self):
         while not self.pool_drivers.empty():
             driver = self.pool_drivers.get()

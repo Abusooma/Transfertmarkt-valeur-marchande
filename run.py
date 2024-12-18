@@ -1,3 +1,4 @@
+from loguru import logger
 import asyncio
 from datetime import datetime
 import time
@@ -7,7 +8,13 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
 from players import ScraperTransferMarkt
-from loguru import logger
+
+
+logger.remove()
+logger.add(sys.stdout, level="INFO", colorize=True,
+           format="<green>{time:HH:mm:ss}</green> | <level>{message}</level>")
+logger.add("logs/fichier.log", level="ERROR",
+           format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", rotation="1 MB", compression="zip")
 
 
 class RealTimeChronometre:
@@ -37,13 +44,23 @@ class RealTimeChronometre:
         temps_total = time.time() - self.debut
         return temps_total
 
-
 class MiseAJourValeursJoueurs:
     def __init__(self, fichier_entree: str, fichier_sortie: str):
         self.fichier_entree = fichier_entree
         self.fichier_sortie = fichier_sortie
         self.scraper = ScraperTransferMarkt(max_threads=3)
         self.chronometre = RealTimeChronometre()
+
+    def convertir_date(self, date_str):
+        formats_possibles = ["%d/%m/%Y",
+                             "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d-%m-%Y"]
+        for fmt in formats_possibles:
+            try:
+                return pd.to_datetime(date_str, format=fmt)
+            except ValueError:
+                continue
+    
+        return pd.NaT
 
     def formater_nom2(self, nom_original: str) -> str:
         parties = nom_original.split()
@@ -61,8 +78,7 @@ class MiseAJourValeursJoueurs:
         return nom_original
 
     async def mettre_a_jour(self):
-        print("Début du Processus: ")
-
+        logger.info("Début du Processus")
         self.chronometre.demarrer()
 
         mois_fr = {
@@ -71,7 +87,8 @@ class MiseAJourValeursJoueurs:
             9: "septembre", 10: "octobre", 11: "novembre", 12: "décembre"
         }
 
-        df = pd.read_excel(self.fichier_entree, parse_dates=["DOB"])
+        df = pd.read_excel(self.fichier_entree, parse_dates=[
+                           "DOB"], dtype={"NOM": str})
         noms_joueurs = df["NOM"].tolist()
 
         try:
@@ -93,8 +110,11 @@ class MiseAJourValeursJoueurs:
 
             dob = ""
             if pd.notnull(ligne["DOB"]):
-                date = ligne["DOB"]
-                dob = f"{date.day} {mois_fr[date.month]} {date.year}"
+                date = self.convertir_date(ligne["DOB"])
+                if pd.notnull(date):
+                    dob = f"{date.day} {mois_fr[date.month]} {date.year}"
+                else:
+                    logger.warning(f"DOB invalide pour le joueur : {nom}")
 
             if valeur_joueur and valeur_joueur.nom_transfermarkt:
                 parties_nom = valeur_joueur.nom_transfermarkt.split()
@@ -110,7 +130,8 @@ class MiseAJourValeursJoueurs:
                 "DOB": dob,
                 "DATE": date_courante,
                 "VALEUR": valeur_joueur.valeur if valeur_joueur else 0.0,
-                "NOM2": nom2
+                "NOM2": nom2,
+                "FIN-CONTRAT": valeur_joueur.fin_contrat if valeur_joueur and valeur_joueur.fin_contrat else ""
             })
 
         df_mise_a_jour = pd.DataFrame(donnees_mises_a_jour)
@@ -120,8 +141,9 @@ class MiseAJourValeursJoueurs:
 
         temps_total = self.chronometre.arreter()
 
-        print(f"\nTerminée. Fichier enregistré sous {self.fichier_sortie}")
-        print(f"Temps total d'exécution : {temps_total:.2f} secondes")
+        logger.info(
+            f"Processus terminé. Fichier enregistré sous {self.fichier_sortie}")
+        logger.info(f"Temps total d'exécution : {temps_total:.2f} secondes")
 
     def ajuster_largeur_colonnes(self, fichier: str):
         wb = load_workbook(fichier)
@@ -143,10 +165,9 @@ class MiseAJourValeursJoueurs:
 
         wb.save(fichier)
 
-
 async def main():
     fichier_entree = "Fichier_error_transf2.xls"
-    fichier_sortie = "resultats/resultats.xlsx"
+    fichier_sortie = "resultat_essai.xlsx"
 
     mise_a_jour = MiseAJourValeursJoueurs(fichier_entree, fichier_sortie)
     try:
@@ -155,7 +176,6 @@ async def main():
         logger.error(f"Une erreur s'est produite : {e}")
     finally:
         mise_a_jour.scraper.cache.fermer()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
