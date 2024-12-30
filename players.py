@@ -145,13 +145,23 @@ class ScraperTransferMarkt:
             self._traiter_popup(driver)
         return None
 
+
     def _normaliser_nom(self, nom_joueur: str) -> str:
-        nom_joueur = ''.join(
-            c for c in unicodedata.normalize('NFD', nom_joueur) if unicodedata.category(c) != 'Mn'
-        )
-        nom_joueur_nettoyer = re.sub(
-            r"[^a-zA-Z0-9\s\-]", "", nom_joueur).lower().strip()
-        return nom_joueur_nettoyer.replace("-", " ")
+        try:
+            nom_joueur = nom_joueur.replace('æ', 'ae').replace('Æ', 'AE')
+
+            nom_joueur = ''.join(
+                c for c in unicodedata.normalize('NFD', nom_joueur) if unicodedata.category(c) != 'Mn'
+            )
+
+            nom_joueur_nettoyer = re.sub(
+                r"[^a-zA-Z0-9\s\-]", "", nom_joueur).lower().strip()
+
+            return nom_joueur_nettoyer.replace("-", " ")
+        except Exception as e:
+            logger.error(f"Erreur lors de la normalisation du nom de joueur: {e}")
+            return nom_joueur
+        
 
     def _generer_variantes_recherche(self, nom_joueur: str) -> list:
         noms = [nom for nom in nom_joueur.split() if nom]
@@ -227,20 +237,18 @@ class ScraperTransferMarkt:
             logger.warning(
                 f"Erreur lors de la récupération de la fin de contrat: {e}")
             return None
-        
+
     def _scraper_valeur_joueur(self, nom_joueur: str) -> Optional[ValeurJoueur]:
         driver = self.pool_drivers.get()
         try:
             nom_normalise = self._normaliser_nom(nom_joueur)
-
-            variantes_recherche = self._generer_variantes_recherche(
-                nom_normalise)
-
+           
+            variantes_recherche = self._generer_variantes_recherche(nom_normalise)
+           
             meilleur_resultat = None
             meilleur_url_details = None
             meilleur_score = 0
             urls_visitees = set()
-
             cache_resultats_normals = {}
 
             for variante in variantes_recherche:
@@ -256,103 +264,132 @@ class ScraperTransferMarkt:
                     table = self._obtenir_table(driver)
 
                     if not table:
+                        logger.debug(
+                            f"Pas de résultats pour la variante: '{variante}'")
                         continue
 
                     lignes = table.css("tr")
+                    logger.debug(
+                        f"Nombre de résultats pour '{variante}': {len(lignes)-1}")
 
-                    for i, ligne in enumerate(lignes[1:], 1):
+                    for ligne in lignes[1:]:
                         try:
-                            element_nom = ligne.css_first(
-                                "td.hauptlink a[title]")
+                            element_nom = ligne.css_first("td.hauptlink a[title]")
                             if not element_nom:
                                 continue
 
                             nom_transfermarkt = element_nom.attributes.get(
                                 'title', '')
+                            if not nom_transfermarkt:
+                                continue
+
                             nom_normalise_transfermarkt = self._normaliser_nom(
                                 nom_transfermarkt)
 
-                            url_details = urljoin(
-                                self.BASE_URL, element_nom.attributes.get('href', ''))
-
-                            if nom_normalise_transfermarkt in cache_resultats_normals:
-                                resultat = cache_resultats_normals[nom_normalise_transfermarkt]
-                            else:
-                                statut_element = ligne.css_first("td")
-                                valeur_element = ligne.css_first(
-                                    "td.rechts.hauptlink")
-
-                                if statut_element and "Fin de carrière" in statut_element.text(strip=True):
-                                    statut = "Fin de carrière"
-                                    valeur = -1
-                                else:
-                                    statut = "actif"
-                                    valeur = 0.0
-                                    if valeur_element:
-                                        valeur_texte = valeur_element.text(
-                                            strip=True)
-                                        if valeur_texte:
-                                            valeur = self._parser_valeur_marche(
-                                                valeur_texte)
-
-                                resultat = {
-                                    'nom': nom_transfermarkt,
-                                    'valeur': valeur,
-                                    'statut': statut
-                                }
-
-                                cache_resultats_normals[nom_normalise_transfermarkt] = resultat
-
-                            score = fuzz.token_sort_ratio(
+                            score_token = fuzz.token_sort_ratio(
                                 nom_normalise, nom_normalise_transfermarkt)
+                            score_partial = fuzz.partial_ratio(
+                                nom_normalise, nom_normalise_transfermarkt)
+                            score_set = fuzz.token_set_ratio(
+                                nom_normalise, nom_normalise_transfermarkt)
+
+                            score = max(score_token, score_partial, score_set)
 
                             if score >= 60 and (score > meilleur_score or
                                                 (score == meilleur_score and resultat['valeur'] >
-                                                 (meilleur_resultat['valeur'] if meilleur_resultat else -float('inf')))):
+                                                (meilleur_resultat['valeur'] if meilleur_resultat else -float('inf')))):
+                               
+                                url_details = urljoin(
+                                    self.BASE_URL, element_nom.attributes.get('href', ''))
+
+                                if nom_normalise_transfermarkt in cache_resultats_normals:
+                                    resultat = cache_resultats_normals[nom_normalise_transfermarkt]
+                                else:
+                                    statut_element = ligne.css_first("td")
+                                    valeur_element = ligne.css_first(
+                                        "td.rechts.hauptlink")
+
+                                    if statut_element and "Fin de carrière" in statut_element.text(strip=True):
+                                        statut = "Fin de carrière"
+                                        valeur = -1
+                                    else:
+                                        statut = "actif"
+                                        valeur = 0.0
+                                        if valeur_element:
+                                            valeur_texte = valeur_element.text(
+                                                strip=True)
+                                            if valeur_texte:
+                                                valeur = self._parser_valeur_marche(
+                                                    valeur_texte)
+
+                                    resultat = {
+                                        'nom': nom_transfermarkt,
+                                        'valeur': valeur,
+                                        'statut': statut
+                                    }
+                                    cache_resultats_normals[nom_normalise_transfermarkt] = resultat
+
                                 meilleur_score = score
                                 meilleur_resultat = {
                                     **resultat,
                                     'score': score
                                 }
                                 meilleur_url_details = url_details
-
+                               
                         except Exception as e:
                             logger.error(
-                                f"Erreur lors du traitement d'un joueur {nom_joueur} dans la ligne: {e}")
+                                f"Erreur lors du traitement d'une ligne pour {nom_joueur}: {str(e)}")
                             continue
 
                 except Exception as e:
                     logger.error(
-                        f"Erreur lors du traitement de la variante {variante} pour {nom_joueur}: {e}")
+                        f"Erreur lors du traitement de la variante {variante}: {str(e)}")
                     continue
 
-            fin_contrat = None
-            if meilleur_resultat and meilleur_url_details:
-                meilleur_resultat['fin_contrat'] = self._recuperer_fin_contrat(
-                    driver, meilleur_url_details)
-            
-
             if meilleur_resultat:
-                return ValeurJoueur(
-                    nom_joueur,
-                    meilleur_resultat['nom'],
-                    meilleur_resultat['valeur'],
-                    meilleur_resultat['statut'],
-                    meilleur_resultat['fin_contrat']
-                )
+                try:
+                    if meilleur_resultat['valeur'] == -1 or meilleur_resultat['statut'] == "Fin de carrière":
+                        fin_contrat = "fin de carriere"
+                    else:
+                        fin_contrat = self._recuperer_fin_contrat(
+                            driver, meilleur_url_details)
 
+                    return ValeurJoueur(
+                        nom_joueur,
+                        meilleur_resultat['nom'],
+                        meilleur_resultat['valeur'],
+                        meilleur_resultat['statut'],
+                        fin_contrat,
+                        None,
+                        time.time()
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Erreur lors de la création de ValeurJoueur: {str(e)}")
+
+            logger.warning(f"Aucun résultat trouvé pour '{nom_joueur}'")
             return ValeurJoueur(
                 nom_joueur,
                 "",
                 0.0,
                 "inconnu",
-                f"Aucun joueur actif trouvé avec le nom {nom_joueur}"
+                None,
+                f"Aucun joueur trouvé avec le nom {nom_joueur}",
+                time.time()
             )
 
         except Exception as e:
             logger.error(
-                f"Erreur globale lors du scraping de {nom_joueur}: {e}")
-            return ValeurJoueur(nom_joueur, "", 0.0, "inconnu", str(e))
+                f"Erreur globale lors du scraping de {nom_joueur}: {str(e)}")
+            return ValeurJoueur(
+                nom_joueur,
+                "",
+                0.0,
+                "inconnu",
+                None,
+                str(e),
+                time.time()
+            )
 
         finally:
             self.pool_drivers.put(driver)

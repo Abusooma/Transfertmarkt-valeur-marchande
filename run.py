@@ -166,7 +166,7 @@ class MiseAJourValeursJoueurs:
         wb.save(fichier)
 
 async def main():
-    fichier_entree = "Fichier_error_transf2.xls"
+    fichier_entree = "FICHIER_desNON-TRAITES.xls"
     fichier_sortie = "resultat_essai.xlsx"
 
     mise_a_jour = MiseAJourValeursJoueurs(fichier_entree, fichier_sortie)
