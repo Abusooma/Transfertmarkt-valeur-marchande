@@ -34,6 +34,8 @@ class ValeurJoueur:
     valeur: float
     statut: str = "actif"
     fin_contrat: str = None
+    date_naissance: str = None
+    controle: str = ""
     erreur: Optional[str] = None
     timestamp: float = time.time()
 
@@ -60,9 +62,12 @@ class CacheSQLite:
                     valeur REAL,
                     statut TEXT,
                     erreur TEXT,
+                    fin_contrat TEXT,
+                    date_naissance TEXT,
                     timestamp INTEGER
                 )
             """)
+
 
     def obtenir(self, nom_joueur: str) -> Optional[ValeurJoueur]:
         conn = self._get_connection()
@@ -222,6 +227,55 @@ class ScraperTransferMarkt:
             logger.error(f"Erreur lors du parsing de la fin de contrat: {e}")
             return None
 
+    # def _parser_date_naissance(self, html):
+    #     try:
+    #         items = html.css('div.data-header__details ul.data-header__items li')
+    #         for item in items:
+    #             if 'Naissance' in item.text():
+    #                 span = item.css_first('span[itemprop="birthDate"]')
+    #                 if span:
+    #                     date_naissance = span.text(strip=True)
+    #                     # On extrait juste la date sans l'âge entre parenthèses
+    #                     date_naissance = date_naissance.split('(')[0].strip()
+    #                     return date_naissance
+    #         logger.warning("Aucune date de naissance trouvée")
+    #         return None
+    #     except Exception as e:
+    #         logger.error(f"Erreur lors du parsing de la date de naissance: {e}")
+    #         return None
+        
+    
+    def _parser_date_naissance(self, html):
+        try:
+            # Trouver toutes les spans de la table d'info
+            spans = html.css(
+                '.info-table.info-table--right-space .info-table__content')
+
+            for i, span in enumerate(spans):
+                # Chercher le label "Naissance (âge):"
+                if "Naissance (âge):" in span.text(strip=True):
+                    # Le span suivant contient la date
+                    if i + 1 < len(spans):
+                        date_span = spans[i + 1]
+                        # La date peut être dans un lien 'a' ou directement dans le span
+                        date_link = date_span.css_first('a')
+                        if date_link:
+                            date_texte = date_link.text(strip=True)
+                        else:
+                            date_texte = date_span.text(strip=True)
+
+                        # Extraire la date sans l'âge entre parenthèses
+                        date_naissance = date_texte.split('(')[0].strip()
+                        return date_naissance
+
+            logger.warning("Aucune date de naissance trouvée")
+            return None
+
+        except Exception as e:
+            logger.error(f"Erreur lors du parsing de la date de naissance: {e}")
+            return None
+        
+
     def _recuperer_fin_contrat(self, driver, url_details):
         try:
             driver.get(url_details)
@@ -348,11 +402,20 @@ class ScraperTransferMarkt:
 
             if meilleur_resultat:
                 try:
+                    # On récupère la page de détail une seule fois pour tous les cas
+                    driver.get(meilleur_url_details)
+                    WebDriverWait(driver, 5)
+                    self._traiter_popup(driver)
+                    html = HTMLParser(driver.page_source)
+                    
+                    # On récupère la date de naissance dans tous les cas
+                    date_naissance = self._parser_date_naissance(html)
+                    
+                    # On détermine la fin de contrat selon le statut
                     if meilleur_resultat['valeur'] == -1 or meilleur_resultat['statut'] == "Fin de carrière":
                         fin_contrat = "fin de carriere"
                     else:
-                        fin_contrat = self._recuperer_fin_contrat(
-                            driver, meilleur_url_details)
+                        fin_contrat = self._parser_valeur_fin_contrat(html)
 
                     return ValeurJoueur(
                         nom_joueur,
@@ -360,12 +423,14 @@ class ScraperTransferMarkt:
                         meilleur_resultat['valeur'],
                         meilleur_resultat['statut'],
                         fin_contrat,
+                        date_naissance,
                         None,
                         time.time()
                     )
+                
                 except Exception as e:
-                    logger.error(
-                        f"Erreur lors de la création de ValeurJoueur: {str(e)}")
+                    logger.error(f"Erreur lors de la création de ValeurJoueur: {str(e)}")
+
 
             logger.warning(f"Aucun résultat trouvé pour '{nom_joueur}'")
             return ValeurJoueur(

@@ -30,12 +30,12 @@ class InverseurNoms:
         else:
             df = pd.read_excel(self.fichier_entree)
 
-        if 'Entree' not in df.columns:
+        if 'NOM' not in df.columns:
             raise ValueError(
                 "La colonne 'Entree' est introuvable dans le fichier Excel")
 
         df_sortie = pd.DataFrame(
-            {'NOM': df['Entree'].apply(self.inverser_nom)})
+            {'NOM': df['NOM'].apply(self.inverser_nom)})
 
         extension_sortie = os.path.splitext(self.fichier_sortie)[1].lower()
 
@@ -72,7 +72,7 @@ class InverseurNoms:
 
 
 def main():
-    fichier_entree = 'Fichier-transf2.xls'  # à remplacer par ton fichier d'entrée
+    fichier_entree = 'pour-inversion.xlsx'  # à remplacer par ton fichier d'entrée
     fichier_sortie = 'fichier_sortie.xlsx'  # à remplacer par ton fichier de sortie
 
     inverseur = InverseurNoms(fichier_entree, fichier_sortie)

@@ -14,7 +14,7 @@ logger.remove()
 logger.add(sys.stdout, level="INFO", colorize=True,
            format="<green>{time:HH:mm:ss}</green> | <level>{message}</level>")
 logger.add("logs/fichier.log", level="ERROR",
-           format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", rotation="1 MB", compression="zip")
+           format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", rotation="1 MB")
 
 
 class RealTimeChronometre:
@@ -77,18 +77,12 @@ class MiseAJourValeursJoueurs:
 
         return nom_original
 
+
     async def mettre_a_jour(self):
         logger.info("Début du Processus")
         self.chronometre.demarrer()
 
-        mois_fr = {
-            1: "janvier", 2: "février", 3: "mars", 4: "avril",
-            5: "mai", 6: "juin", 7: "juillet", 8: "août",
-            9: "septembre", 10: "octobre", 11: "novembre", 12: "décembre"
-        }
-
-        df = pd.read_excel(self.fichier_entree, parse_dates=[
-                           "DOB"], dtype={"NOM": str})
+        df = pd.read_excel(self.fichier_entree, dtype={"NOM": str})
         noms_joueurs = df["NOM"].tolist()
 
         try:
@@ -108,14 +102,6 @@ class MiseAJourValeursJoueurs:
             nom = ligne["NOM"]
             valeur_joueur = valeurs_joueurs.get(nom, None)
 
-            dob = ""
-            if pd.notnull(ligne["DOB"]):
-                date = self.convertir_date(ligne["DOB"])
-                if pd.notnull(date):
-                    dob = f"{date.day} {mois_fr[date.month]} {date.year}"
-                else:
-                    logger.warning(f"DOB invalide pour le joueur : {nom}")
-
             if valeur_joueur and valeur_joueur.nom_transfermarkt:
                 parties_nom = valeur_joueur.nom_transfermarkt.split()
                 if len(parties_nom) >= 3:
@@ -127,7 +113,7 @@ class MiseAJourValeursJoueurs:
 
             donnees_mises_a_jour.append({
                 "NOM": valeur_joueur.nom_transfermarkt if valeur_joueur else "",
-                "DOB": dob,
+                "DOB": valeur_joueur.date_naissance if valeur_joueur and valeur_joueur.date_naissance else "",
                 "DATE": date_courante,
                 "VALEUR": valeur_joueur.valeur if valeur_joueur else 0.0,
                 "NOM2": nom2,
@@ -144,6 +130,7 @@ class MiseAJourValeursJoueurs:
         logger.info(
             f"Processus terminé. Fichier enregistré sous {self.fichier_sortie}")
         logger.info(f"Temps total d'exécution : {temps_total:.2f} secondes")
+
 
     def ajuster_largeur_colonnes(self, fichier: str):
         wb = load_workbook(fichier)
@@ -166,7 +153,7 @@ class MiseAJourValeursJoueurs:
         wb.save(fichier)
 
 async def main():
-    fichier_entree = "FICHIER_desNON-TRAITES.xls"
+    fichier_entree = "pour-inverser-sortie1.xls"
     fichier_sortie = "resultat_essai.xlsx"
 
     mise_a_jour = MiseAJourValeursJoueurs(fichier_entree, fichier_sortie)
