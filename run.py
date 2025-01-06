@@ -7,9 +7,10 @@ import threading
 import pandas as pd
 from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
 from players import ScraperTransferMarkt
 
-
+# Configuration du logger
 logger.remove()
 logger.add(sys.stdout, level="INFO", colorize=True,
            format="<green>{time:HH:mm:ss}</green> | <level>{message}</level>")
@@ -44,6 +45,7 @@ class RealTimeChronometre:
         temps_total = time.time() - self.debut
         return temps_total
 
+
 class MiseAJourValeursJoueurs:
     def __init__(self, fichier_entree: str, fichier_sortie: str):
         self.fichier_entree = fichier_entree
@@ -51,20 +53,8 @@ class MiseAJourValeursJoueurs:
         self.scraper = ScraperTransferMarkt(max_threads=3)
         self.chronometre = RealTimeChronometre()
 
-    def convertir_date(self, date_str):
-        formats_possibles = ["%d/%m/%Y",
-                             "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d-%m-%Y"]
-        for fmt in formats_possibles:
-            try:
-                return pd.to_datetime(date_str, format=fmt)
-            except ValueError:
-                continue
-    
-        return pd.NaT
-
     def formater_nom2(self, nom_original: str) -> str:
         parties = nom_original.split()
-
         index_majuscule = next(
             (i for i, mot in enumerate(parties) if mot.isupper()), None)
 
@@ -72,11 +62,9 @@ class MiseAJourValeursJoueurs:
             mot_majuscule = parties[index_majuscule]
             autres_parties = parties[:index_majuscule] + \
                 parties[index_majuscule+1:]
-
             return f"{mot_majuscule} {' '.join(autres_parties)}"
 
         return nom_original
-
 
     async def mettre_a_jour(self):
         logger.info("Début du Processus")
@@ -111,46 +99,67 @@ class MiseAJourValeursJoueurs:
             else:
                 nom2 = self.formater_nom2(nom)
 
-            donnees_mises_a_jour.append({
+            donnees = {
                 "NOM": valeur_joueur.nom_transfermarkt if valeur_joueur else "",
                 "DOB": valeur_joueur.date_naissance if valeur_joueur and valeur_joueur.date_naissance else "",
                 "DATE": date_courante,
                 "VALEUR": valeur_joueur.valeur if valeur_joueur else 0.0,
                 "NOM2": nom2,
-                "FIN-CONTRAT": valeur_joueur.fin_contrat if valeur_joueur and valeur_joueur.fin_contrat else ""
-            })
+                "FIN-CONTRAT": valeur_joueur.fin_contrat if valeur_joueur and valeur_joueur.fin_contrat else "",
+                "CONTROLE": valeur_joueur.controle if valeur_joueur else ""
+            }
+            donnees_mises_a_jour.append(donnees)
 
         df_mise_a_jour = pd.DataFrame(donnees_mises_a_jour)
-        df_mise_a_jour.to_excel(self.fichier_sortie, index=False)
 
-        self.ajuster_largeur_colonnes(self.fichier_sortie)
+        colonnes = ["NOM", "DOB", "DATE", "VALEUR",
+                    "NOM2", "FIN-CONTRAT", "CONTROLE"]
+        for col in colonnes:
+            if col not in df_mise_a_jour.columns:
+                df_mise_a_jour[col] = ""
+
+        df_mise_a_jour = df_mise_a_jour[colonnes]
+
+        with pd.ExcelWriter(self.fichier_sortie, engine='openpyxl') as writer:
+            df_mise_a_jour.to_excel(writer, index=False, sheet_name='Sheet1')
+
+            workbook = writer.book
+            worksheet = workbook['Sheet1']
+
+            for column in worksheet.columns:
+                max_length = 0
+                column = list(column)
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = (max_length + 2)
+                worksheet.column_dimensions[column[0]
+                                            .column_letter].width = adjusted_width
+
+            yellow_fill = PatternFill(start_color="FFFF00",
+                                      end_color="FFFF00",
+                                      fill_type="solid")
+
+            controle_col = None
+            for idx, col in enumerate(worksheet[1], 1):
+                if col.value == "CONTROLE":
+                    controle_col = idx
+                    break
+
+            if controle_col:
+                for row in worksheet.iter_rows(min_row=2):
+                    if row[controle_col-1].value == "A verifier":
+                        for cell in row:
+                            cell.fill = yellow_fill
 
         temps_total = self.chronometre.arreter()
-
         logger.info(
             f"Processus terminé. Fichier enregistré sous {self.fichier_sortie}")
         logger.info(f"Temps total d'exécution : {temps_total:.2f} secondes")
 
-
-    def ajuster_largeur_colonnes(self, fichier: str):
-        wb = load_workbook(fichier)
-        sheet = wb.active
-
-        for col in sheet.columns:
-            max_length = 0
-            col_letter = get_column_letter(col[0].column)
-
-            for cell in col:
-                try:
-                    if cell.value:
-                        max_length = max(max_length, len(str(cell.value)))
-                except:
-                    pass
-
-            adjusted_width = max_length + 2
-            sheet.column_dimensions[col_letter].width = adjusted_width
-
-        wb.save(fichier)
 
 async def main():
     fichier_entree = "pour-inverser-sortie1.xls"

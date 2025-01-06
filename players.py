@@ -68,7 +68,6 @@ class CacheSQLite:
                 )
             """)
 
-
     def obtenir(self, nom_joueur: str) -> Optional[ValeurJoueur]:
         conn = self._get_connection()
         cursor = conn.execute(
@@ -150,7 +149,6 @@ class ScraperTransferMarkt:
             self._traiter_popup(driver)
         return None
 
-
     def _normaliser_nom(self, nom_joueur: str) -> str:
         try:
             nom_joueur = nom_joueur.replace('æ', 'ae').replace('Æ', 'AE')
@@ -164,9 +162,9 @@ class ScraperTransferMarkt:
 
             return nom_joueur_nettoyer.replace("-", " ")
         except Exception as e:
-            logger.error(f"Erreur lors de la normalisation du nom de joueur: {e}")
+            logger.error(
+                f"Erreur lors de la normalisation du nom de joueur: {e}")
             return nom_joueur
-        
 
     def _generer_variantes_recherche(self, nom_joueur: str) -> list:
         noms = [nom for nom in nom_joueur.split() if nom]
@@ -208,7 +206,7 @@ class ScraperTransferMarkt:
     def _parser_valeur_fin_contrat(self, html):
         try:
             contrat_spans = html.css('span')
-            
+
             for i, span in enumerate(contrat_spans):
                 text = span.text(strip=True)
                 if "Contrat jusqu'à:" in text:
@@ -227,54 +225,22 @@ class ScraperTransferMarkt:
             logger.error(f"Erreur lors du parsing de la fin de contrat: {e}")
             return None
 
-    # def _parser_date_naissance(self, html):
-    #     try:
-    #         items = html.css('div.data-header__details ul.data-header__items li')
-    #         for item in items:
-    #             if 'Naissance' in item.text():
-    #                 span = item.css_first('span[itemprop="birthDate"]')
-    #                 if span:
-    #                     date_naissance = span.text(strip=True)
-    #                     # On extrait juste la date sans l'âge entre parenthèses
-    #                     date_naissance = date_naissance.split('(')[0].strip()
-    #                     return date_naissance
-    #         logger.warning("Aucune date de naissance trouvée")
-    #         return None
-    #     except Exception as e:
-    #         logger.error(f"Erreur lors du parsing de la date de naissance: {e}")
-    #         return None
-        
-    
     def _parser_date_naissance(self, html):
         try:
-            # Trouver toutes les spans de la table d'info
-            spans = html.css(
-                '.info-table.info-table--right-space .info-table__content')
-
-            for i, span in enumerate(spans):
-                # Chercher le label "Naissance (âge):"
-                if "Naissance (âge):" in span.text(strip=True):
-                    # Le span suivant contient la date
-                    if i + 1 < len(spans):
-                        date_span = spans[i + 1]
-                        # La date peut être dans un lien 'a' ou directement dans le span
-                        date_link = date_span.css_first('a')
-                        if date_link:
-                            date_texte = date_link.text(strip=True)
-                        else:
-                            date_texte = date_span.text(strip=True)
-
-                        # Extraire la date sans l'âge entre parenthèses
-                        date_naissance = date_texte.split('(')[0].strip()
+            items = html.css('div.data-header__details ul.data-header__items li')
+            for item in items:
+                if 'Naissance' in item.text():
+                    span = item.css_first('span[itemprop="birthDate"]')
+                    if span:
+                        date_naissance = span.text(strip=True)
+                        date_naissance = date_naissance.split('(')[0].strip()
                         return date_naissance
-
             logger.warning("Aucune date de naissance trouvée")
             return None
-
         except Exception as e:
             logger.error(f"Erreur lors du parsing de la date de naissance: {e}")
             return None
-        
+                
 
     def _recuperer_fin_contrat(self, driver, url_details):
         try:
@@ -286,178 +252,223 @@ class ScraperTransferMarkt:
             html = HTMLParser(driver.page_source)
 
             return self._parser_valeur_fin_contrat(html)
-            
+
         except Exception as e:
             logger.warning(
                 f"Erreur lors de la récupération de la fin de contrat: {e}")
             return None
+         
+    def _creer_valeur_joueur_court(self, nom_joueur: str) -> ValeurJoueur:
+        """Crée un ValeurJoueur pour les noms courts nécessitant une vérification."""
+        return ValeurJoueur(
+            nom_joueur,
+            nom_joueur,
+            0.0,
+            "actif",
+            "",
+            "",
+            "A verifier",
+            None,
+            time.time()
+        )
 
-    def _scraper_valeur_joueur(self, nom_joueur: str) -> Optional[ValeurJoueur]:
-        driver = self.pool_drivers.get()
-        try:
-            nom_normalise = self._normaliser_nom(nom_joueur)
-           
-            variantes_recherche = self._generer_variantes_recherche(nom_normalise)
-           
-            meilleur_resultat = None
-            meilleur_url_details = None
-            meilleur_score = 0
-            urls_visitees = set()
-            cache_resultats_normals = {}
 
-            for variante in variantes_recherche:
-                url_recherche = f"{self.BASE_URL}/schnellsuche/ergebnis/schnellsuche?query={quote(variante)}"
+    def _creer_valeur_joueur_erreur(self, nom_joueur: str, erreur: str) -> ValeurJoueur:
+        """Crée un ValeurJoueur pour les cas d'erreur."""
+        return ValeurJoueur(
+            nom_original=nom_joueur,
+            nom_transfermarkt=nom_joueur,
+            valeur=0.0,
+            statut="actif",
+            fin_contrat="",
+            date_naissance="",
+            controle="A verifier",
+            erreur=erreur,
+            timestamp=time.time()
+        )
 
-                if url_recherche in urls_visitees:
+
+    def _analyser_ligne_resultat(self, ligne, nom_normalise: str, cache_resultats_normals: dict):
+        """Analyse une ligne de résultat et retourne les informations extraites."""
+        element_nom = ligne.css_first("td.hauptlink a[title]")
+        if not element_nom:
+            return None
+
+        nom_transfermarkt = element_nom.attributes.get('title', '')
+        if not nom_transfermarkt:
+            return None
+
+        nom_normalise_transfermarkt = self._normaliser_nom(nom_transfermarkt)
+        url_details = urljoin(
+            self.BASE_URL, element_nom.attributes.get('href', ''))
+
+        # Calcul des scores de similarité
+        score_token = fuzz.token_sort_ratio(
+            nom_normalise, nom_normalise_transfermarkt)
+        score_partial = fuzz.partial_ratio(
+            nom_normalise, nom_normalise_transfermarkt)
+        score_set = fuzz.token_set_ratio(
+            nom_normalise, nom_normalise_transfermarkt)
+        score = max(score_token, score_partial, score_set)
+
+        if nom_normalise_transfermarkt in cache_resultats_normals:
+            resultat = cache_resultats_normals[nom_normalise_transfermarkt]
+        else:
+            resultat = self._extraire_info_joueur(ligne)
+            cache_resultats_normals[nom_normalise_transfermarkt] = resultat
+
+        return {
+            'score': score,
+            'url_details': url_details,
+            'resultat': resultat
+        }
+
+
+    def _extraire_info_joueur(self, ligne) -> dict:
+        """Extrait les informations d'un joueur à partir d'une ligne."""
+        statut_element = ligne.css_first("td")
+        valeur_element = ligne.css_first("td.rechts.hauptlink")
+
+        if statut_element and "Fin de carrière" in statut_element.text(strip=True):
+            statut = "Fin de carrière"
+            valeur = -1
+        else:
+            statut = "actif"
+            valeur = 0.0
+            if valeur_element:
+                valeur_texte = valeur_element.text(strip=True)
+                if valeur_texte:
+                    valeur = self._parser_valeur_marche(valeur_texte)
+
+        return {
+            'nom': ligne.css_first("td.hauptlink a[title]").attributes.get('title', ''),
+            'valeur': valeur,
+            'statut': statut
+        }
+
+
+    def _rechercher_meilleur_resultat(self, driver, variantes_recherche: list, nom_normalise: str):
+        """Recherche le meilleur résultat parmi toutes les variantes."""
+        meilleur_resultat = None
+        meilleur_url_details = None
+        meilleur_score = 0
+        urls_visitees = set()
+        cache_resultats_normals = {}
+
+        for variante in variantes_recherche:
+            url_recherche = f"{self.BASE_URL}/schnellsuche/ergebnis/schnellsuche?query={quote(variante)}"
+
+            if url_recherche in urls_visitees:
+                continue
+
+            urls_visitees.add(url_recherche)
+
+            try:
+                driver.get(url_recherche)
+                table = self._obtenir_table(driver)
+
+                if not table:
+                    logger.debug(
+                        f"Pas de résultats pour la variante: '{variante}'")
                     continue
 
-                urls_visitees.add(url_recherche)
+                lignes = table.css("tr")
 
-                try:
-                    driver.get(url_recherche)
-                    table = self._obtenir_table(driver)
+                for ligne in lignes[1:]:
+                    try:
+                        resultat_analyse = self._analyser_ligne_resultat(
+                            ligne, nom_normalise, cache_resultats_normals)
 
-                    if not table:
-                        logger.debug(
-                            f"Pas de résultats pour la variante: '{variante}'")
-                        continue
-
-                    lignes = table.css("tr")
-                    logger.debug(
-                        f"Nombre de résultats pour '{variante}': {len(lignes)-1}")
-
-                    for ligne in lignes[1:]:
-                        try:
-                            element_nom = ligne.css_first("td.hauptlink a[title]")
-                            if not element_nom:
-                                continue
-
-                            nom_transfermarkt = element_nom.attributes.get(
-                                'title', '')
-                            if not nom_transfermarkt:
-                                continue
-
-                            nom_normalise_transfermarkt = self._normaliser_nom(
-                                nom_transfermarkt)
-
-                            score_token = fuzz.token_sort_ratio(
-                                nom_normalise, nom_normalise_transfermarkt)
-                            score_partial = fuzz.partial_ratio(
-                                nom_normalise, nom_normalise_transfermarkt)
-                            score_set = fuzz.token_set_ratio(
-                                nom_normalise, nom_normalise_transfermarkt)
-
-                            score = max(score_token, score_partial, score_set)
-
-                            if score >= 60 and (score > meilleur_score or
-                                                (score == meilleur_score and resultat['valeur'] >
-                                                (meilleur_resultat['valeur'] if meilleur_resultat else -float('inf')))):
-                               
-                                url_details = urljoin(
-                                    self.BASE_URL, element_nom.attributes.get('href', ''))
-
-                                if nom_normalise_transfermarkt in cache_resultats_normals:
-                                    resultat = cache_resultats_normals[nom_normalise_transfermarkt]
-                                else:
-                                    statut_element = ligne.css_first("td")
-                                    valeur_element = ligne.css_first(
-                                        "td.rechts.hauptlink")
-
-                                    if statut_element and "Fin de carrière" in statut_element.text(strip=True):
-                                        statut = "Fin de carrière"
-                                        valeur = -1
-                                    else:
-                                        statut = "actif"
-                                        valeur = 0.0
-                                        if valeur_element:
-                                            valeur_texte = valeur_element.text(
-                                                strip=True)
-                                            if valeur_texte:
-                                                valeur = self._parser_valeur_marche(
-                                                    valeur_texte)
-
-                                    resultat = {
-                                        'nom': nom_transfermarkt,
-                                        'valeur': valeur,
-                                        'statut': statut
-                                    }
-                                    cache_resultats_normals[nom_normalise_transfermarkt] = resultat
-
-                                meilleur_score = score
-                                meilleur_resultat = {
-                                    **resultat,
-                                    'score': score
-                                }
-                                meilleur_url_details = url_details
-                               
-                        except Exception as e:
-                            logger.error(
-                                f"Erreur lors du traitement d'une ligne pour {nom_joueur}: {str(e)}")
+                        if not resultat_analyse:
                             continue
 
-                except Exception as e:
-                    logger.error(
-                        f"Erreur lors du traitement de la variante {variante}: {str(e)}")
-                    continue
+                        if (resultat_analyse['score'] >= 90 and
+                            (resultat_analyse['score'] > meilleur_score or
+                            (resultat_analyse['score'] == meilleur_score and
+                            resultat_analyse['resultat']['valeur'] >
+                            (meilleur_resultat['valeur'] if meilleur_resultat else -float('inf'))))):
 
-            if meilleur_resultat:
-                try:
-                    # On récupère la page de détail une seule fois pour tous les cas
-                    driver.get(meilleur_url_details)
-                    WebDriverWait(driver, 5)
-                    self._traiter_popup(driver)
-                    html = HTMLParser(driver.page_source)
-                    
-                    # On récupère la date de naissance dans tous les cas
-                    date_naissance = self._parser_date_naissance(html)
-                    
-                    # On détermine la fin de contrat selon le statut
-                    if meilleur_resultat['valeur'] == -1 or meilleur_resultat['statut'] == "Fin de carrière":
-                        fin_contrat = "fin de carriere"
-                    else:
-                        fin_contrat = self._parser_valeur_fin_contrat(html)
+                            meilleur_score = resultat_analyse['score']
+                            meilleur_resultat = {
+                                **resultat_analyse['resultat'],
+                                'score': resultat_analyse['score']
+                            }
+                            meilleur_url_details = resultat_analyse['url_details']
 
-                    return ValeurJoueur(
-                        nom_joueur,
-                        meilleur_resultat['nom'],
-                        meilleur_resultat['valeur'],
-                        meilleur_resultat['statut'],
-                        fin_contrat,
-                        date_naissance,
-                        None,
-                        time.time()
-                    )
-                
-                except Exception as e:
-                    logger.error(f"Erreur lors de la création de ValeurJoueur: {str(e)}")
+                    except Exception as e:
+                        logger.error(
+                            f"Erreur lors de l'analyse d'une ligne: {str(e)}")
+                        continue
+
+            except Exception as e:
+                logger.error(
+                    f"Erreur lors du traitement de la variante {variante}: {str(e)}")
+                continue
+
+        return meilleur_resultat, meilleur_url_details
 
 
-            logger.warning(f"Aucun résultat trouvé pour '{nom_joueur}'")
+    def _finaliser_valeur_joueur(self, driver, meilleur_resultat: dict, meilleur_url_details: str, nom_joueur: str) -> ValeurJoueur:
+        """Finalise la création du ValeurJoueur avec les informations détaillées."""
+        try:
+            driver.get(meilleur_url_details)
+            WebDriverWait(driver, 5)
+            self._traiter_popup(driver)
+            html = HTMLParser(driver.page_source)
+
+            date_naissance = self._parser_date_naissance(html)
+
+            if meilleur_resultat['valeur'] == -1 or meilleur_resultat['statut'] == "Fin de carrière":
+                fin_contrat = "fin de carriere"
+            else:
+                fin_contrat = self._parser_valeur_fin_contrat(html)
+
             return ValeurJoueur(
                 nom_joueur,
-                "",
-                0.0,
-                "inconnu",
+                meilleur_resultat['nom'],
+                meilleur_resultat['valeur'],
+                meilleur_resultat['statut'],
+                fin_contrat,
+                date_naissance,
                 None,
-                f"Aucun joueur trouvé avec le nom {nom_joueur}",
+                None,
                 time.time()
             )
+        except Exception as e:
+            logger.error(
+                f"Erreur lors de la finalisation de ValeurJoueur: {str(e)}")
+            raise
+
+
+    def _scraper_valeur_joueur(self, nom_joueur: str) -> Optional[ValeurJoueur]:
+        """Méthode principale de scraping des valeurs des joueurs."""
+        driver = self.pool_drivers.get()
+        try:
+            if len(nom_joueur.strip()) < 7:
+                return self._creer_valeur_joueur_court(nom_joueur)
+
+            nom_normalise = self._normaliser_nom(nom_joueur)
+            variantes_recherche = self._generer_variantes_recherche(nom_normalise)
+
+            meilleur_resultat, meilleur_url_details = self._rechercher_meilleur_resultat(
+                driver, variantes_recherche, nom_normalise)
+
+            if meilleur_resultat:
+                return self._finaliser_valeur_joueur(
+                    driver, meilleur_resultat, meilleur_url_details, nom_joueur)
+
+            logger.warning(f"Aucun résultat trouvé pour '{nom_joueur}'")
+            return self._creer_valeur_joueur_erreur(
+                nom_joueur, f"Aucun joueur trouvé avec le nom {nom_joueur}")
 
         except Exception as e:
             logger.error(
                 f"Erreur globale lors du scraping de {nom_joueur}: {str(e)}")
-            return ValeurJoueur(
-                nom_joueur,
-                "",
-                0.0,
-                "inconnu",
-                None,
-                str(e),
-                time.time()
-            )
+            return self._creer_valeur_joueur_erreur(nom_joueur, str(e))
 
         finally:
             self.pool_drivers.put(driver)
+
 
     def recuperer_valeurs_joueurs(self, noms_joueurs: List[str]) -> Dict[str, ValeurJoueur]:
         self.joueurs_non_traites = []
@@ -490,7 +501,7 @@ class ScraperTransferMarkt:
                             f"Joueur non traité: {valeur.nom_original} - {valeur.erreur}")
 
                 except Exception as e:
-                   
+
                     logger.error(f"Erreur inattendue pour un joueur: {e}")
                     self.joueurs_non_traites.append({
                         'nom': futures[future],
@@ -510,8 +521,8 @@ class ScraperTransferMarkt:
 
         return resultats
 
+
     def fermer(self):
         while not self.pool_drivers.empty():
             driver = self.pool_drivers.get()
             driver.quit()
-
