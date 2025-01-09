@@ -66,6 +66,14 @@ class MiseAJourValeursJoueurs:
 
         return nom_original
 
+
+    def inverser_nom(self, nom: str) -> str:
+        if not nom:
+            return ""
+        mots = nom.split()
+        return " ".join(mots[::-1])
+
+
     async def mettre_a_jour(self):
         logger.info("Début du Processus")
         self.chronometre.demarrer()
@@ -90,29 +98,44 @@ class MiseAJourValeursJoueurs:
             nom = ligne["NOM"]
             valeur_joueur = valeurs_joueurs.get(nom, None)
 
-            if valeur_joueur and valeur_joueur.nom_transfermarkt:
-                parties_nom = valeur_joueur.nom_transfermarkt.split()
-                if len(parties_nom) >= 3:
-                    nom2 = f"{parties_nom[-2].upper()} {parties_nom[-1].upper()} {' '.join(parties_nom[:-2])}"
-                else:
-                    nom2 = f"{parties_nom[-1].upper()} {' '.join(parties_nom[:-1])}"
+            if valeur_joueur and valeur_joueur.controle == "A verifier":
+                donnees = {
+                    "NOM": nom,
+                    "NOM_INVERSE": "",
+                    "DOB": "",
+                    "DATE": date_courante,
+                    "VALEUR": "",
+                    "NOM2": "",
+                    "FIN-CONTRAT": "",
+                    "CONTROLE": "A verifier"
+                }
             else:
-                nom2 = self.formater_nom2(nom)
+                if valeur_joueur and valeur_joueur.nom_transfermarkt:
+                    parties_nom = valeur_joueur.nom_transfermarkt.split()
+                    if len(parties_nom) >= 3:
+                        nom2 = f"{parties_nom[-2].upper()} {parties_nom[-1].upper()} {' '.join(parties_nom[:-2])}"
+                    else:
+                        nom2 = f"{parties_nom[-1].upper()} {' '.join(parties_nom[:-1])}"
+                    nom_joueur = valeur_joueur.nom_transfermarkt
+                else:
+                    nom2 = self.formater_nom2(nom)
+                    nom_joueur = nom
 
-            donnees = {
-                "NOM": valeur_joueur.nom_transfermarkt if valeur_joueur else "",
-                "DOB": valeur_joueur.date_naissance if valeur_joueur and valeur_joueur.date_naissance else "",
-                "DATE": date_courante,
-                "VALEUR": valeur_joueur.valeur if valeur_joueur else 0.0,
-                "NOM2": nom2,
-                "FIN-CONTRAT": valeur_joueur.fin_contrat if valeur_joueur and valeur_joueur.fin_contrat else "",
-                "CONTROLE": valeur_joueur.controle if valeur_joueur else ""
-            }
+                donnees = {
+                    "NOM": nom_joueur,
+                    "NOM_INVERSE": self.inverser_nom(nom_joueur),
+                    "DOB": valeur_joueur.date_naissance if valeur_joueur and valeur_joueur.date_naissance else "",
+                    "DATE": date_courante,
+                    "VALEUR": valeur_joueur.valeur if valeur_joueur else 0.0,
+                    "NOM2": nom2,
+                    "FIN-CONTRAT": valeur_joueur.fin_contrat if valeur_joueur and valeur_joueur.fin_contrat else "",
+                    "CONTROLE": valeur_joueur.controle if valeur_joueur else ""
+                }
             donnees_mises_a_jour.append(donnees)
 
         df_mise_a_jour = pd.DataFrame(donnees_mises_a_jour)
 
-        colonnes = ["NOM", "DOB", "DATE", "VALEUR",
+        colonnes = ["NOM", "NOM_INVERSE", "DOB", "DATE", "VALEUR",
                     "NOM2", "FIN-CONTRAT", "CONTROLE"]
         for col in colonnes:
             if col not in df_mise_a_jour.columns:
@@ -162,8 +185,8 @@ class MiseAJourValeursJoueurs:
 
 
 async def main():
-    fichier_entree = "pour-inverser-sortie1.xls"
-    fichier_sortie = "resultat_essai.xlsx"
+    fichier_entree = "Fichier-Transf4.xls"
+    fichier_sortie = "resultat_avec_inversion.xlsx"
 
     mise_a_jour = MiseAJourValeursJoueurs(fichier_entree, fichier_sortie)
     try:

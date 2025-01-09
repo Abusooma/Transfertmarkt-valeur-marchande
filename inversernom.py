@@ -72,8 +72,9 @@ class InverseurNoms:
 
 
 def main():
-    fichier_entree = 'pour-inversion.xlsx'  # à remplacer par ton fichier d'entrée
-    fichier_sortie = 'fichier_sortie.xlsx'  # à remplacer par ton fichier de sortie
+    # à remplacer par ton fichier d'entrée
+    fichier_entree = 'PourRUNTR8JANVIER.xls'
+    fichier_sortie = 'rere.xlsx'  # à remplacer par ton fichier de sortie
 
     inverseur = InverseurNoms(fichier_entree, fichier_sortie)
 
