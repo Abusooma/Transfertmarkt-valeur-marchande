@@ -20,41 +20,41 @@ class InverseurNoms:
        return nom
 
    def traiter_fichier(self):
-       try:
-           df = pd.read_excel(self.fichier_entree, engine='openpyxl')
-       except:
-           try:
-               df = pd.read_excel(self.fichier_entree, engine='xlrd')
-           except:
-               raise ValueError("Impossible de lire le fichier Excel")
+      try:
+         df = pd.read_excel(self.fichier_entree, engine='openpyxl')
+      except Exception:
+         try:
+             df = pd.read_excel(self.fichier_entree, engine='xlrd')
+         except:
+             raise ValueError("Impossible de lire le fichier Excel")
 
-       if 'NOM' not in df.columns:
-           raise ValueError("La colonne 'NOM' est introuvable")
+      if 'NOM' not in df.columns:
+          raise ValueError("La colonne 'NOM' est introuvable")
 
-       df_sortie = df.copy()
-       nom_index = df_sortie.columns.get_loc('NOM')
-       noms_inverses = df_sortie['NOM'].apply(self.inverser_nom)
+      df_sortie = df.copy()
+      nom_index = df_sortie.columns.get_loc('NOM')
+      noms_inverses = df_sortie['NOM'].apply(self.inverser_nom)
 
-       colonnes = list(df_sortie.columns)
-       colonnes.insert(nom_index + 1, 'NOM_INVERSE')
-       df_sortie = df_sortie.reindex(columns=colonnes)
-       df_sortie['NOM_INVERSE'] = noms_inverses
+      colonnes = list(df_sortie.columns)
+      colonnes.insert(nom_index + 1, 'NOM_INVERSE')
+      df_sortie = df_sortie.reindex(columns=colonnes)
+      df_sortie['NOM_INVERSE'] = noms_inverses
 
-       try:
-           df_sortie.to_excel(self.fichier_sortie,
-                              index=False, engine='openpyxl')
-       except:
-           try:
-               df_sortie.to_excel(self.fichier_sortie,
-                                  index=False, engine='xlwt')
-           except:
-               raise ValueError("Impossible de sauvegarder le fichier Excel")
+      try:
+          df_sortie.to_excel(self.fichier_sortie,
+                             index=False, engine='openpyxl')
+      except:
+          try:
+              df_sortie.to_excel(self.fichier_sortie,
+                                 index=False, engine='xlwt')
+          except:
+              raise ValueError("Impossible de sauvegarder le fichier Excel")
 
-       if self.fichier_sortie.endswith('.xlsx'):
-           self.ajuster_largeur_colonnes(self.fichier_sortie)
+      if self.fichier_sortie.endswith('.xlsx'):
+          self.ajuster_largeur_colonnes(self.fichier_sortie)
 
-       print(
-           f"Fichier traité avec succès. Sauvegardé dans {self.fichier_sortie}")
+      print(
+          f"Fichier traité avec succès. Sauvegardé dans {self.fichier_sortie}")
 
    def ajuster_largeur_colonnes(self, fichier: str):
        wb = load_workbook(fichier)
@@ -76,8 +76,8 @@ class InverseurNoms:
 
 
 def main():
-   fichier_entree = 'PourRUNTR8JANVIER.xls'
-   fichier_sortie = 're.xlsx'
+   fichier_entree = 'pour_bugs_inversion_nom.xls'
+   fichier_sortie = 'resultat_r.xlsx'
 
    inverseur = InverseurNoms(fichier_entree, fichier_sortie)
    inverseur.traiter_fichier()
